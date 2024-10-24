@@ -18,7 +18,8 @@ package metrics
 
 import (
 	"context"
-	"github.com/blang/semver"
+
+	"github.com/blang/semver/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
@@ -26,6 +27,7 @@ import (
 // Counter is our internal representation for our wrapping struct around prometheus
 // counters. Counter implements both kubeCollector and CounterMetric.
 type Counter struct {
+	ctx context.Context
 	CounterMetric
 	*CounterOpts
 	lazyMetric
@@ -35,6 +37,9 @@ type Counter struct {
 // The implementation of the Metric interface is expected by testutil.GetCounterMetricValue.
 var _ Metric = &Counter{}
 
+// All supported exemplar metric types implement the metricWithExemplar interface.
+var _ metricWithExemplar = &Counter{}
+
 // NewCounter returns an object which satisfies the kubeCollector and CounterMetric interfaces.
 // However, the object returned will not measure anything unless the collector is first
 // registered, since the metric is lazily instantiated.
@@ -43,7 +48,7 @@ func NewCounter(opts *CounterOpts) *Counter {
 
 	kc := &Counter{
 		CounterOpts: opts,
-		lazyMetric:  lazyMetric{},
+		lazyMetric:  lazyMetric{stabilityLevel: opts.StabilityLevel},
 	}
 	kc.setPrometheusCounter(noop)
 	kc.lazyInit(kc, BuildFQName(opts.Namespace, opts.Subsystem, opts.Name))
@@ -92,9 +97,23 @@ func (c *Counter) initializeDeprecatedMetric() {
 	c.initializeMetric()
 }
 
-// WithContext allows the normal Counter metric to pass in context. The context is no-op now.
+// WithContext allows the normal Counter metric to pass in context.
 func (c *Counter) WithContext(ctx context.Context) CounterMetric {
+	c.ctx = ctx
 	return c.CounterMetric
+}
+
+// withExemplar initializes the exemplarMetric object and sets the exemplar value.
+func (c *Counter) withExemplar(v float64) {
+	(&exemplarMetric{c}).withExemplar(v)
+}
+
+func (c *Counter) Add(v float64) {
+	c.withExemplar(v)
+}
+
+func (c *Counter) Inc() {
+	c.withExemplar(1)
 }
 
 // CounterVec is the internal representation of our wrapping struct around prometheus
@@ -106,9 +125,14 @@ type CounterVec struct {
 	originalLabels []string
 }
 
-// NewCounterVec returns an object which satisfies the kubeCollector and CounterVecMetric interfaces.
+var _ kubeCollector = &CounterVec{}
+
+// TODO: make this true: var _ CounterVecMetric = &CounterVec{}
+
+// NewCounterVec returns an object which satisfies the kubeCollector and (almost) CounterVecMetric interfaces.
 // However, the object returned will not measure anything unless the collector is first
-// registered, since the metric is lazily instantiated.
+// registered, since the metric is lazily instantiated, and only members extracted after
+// registration will actually measure anything.
 func NewCounterVec(opts *CounterOpts, labels []string) *CounterVec {
 	opts.StabilityLevel.setDefaults()
 
@@ -123,7 +147,7 @@ func NewCounterVec(opts *CounterOpts, labels []string) *CounterVec {
 		CounterVec:     noopCounterVec,
 		CounterOpts:    opts,
 		originalLabels: labels,
-		lazyMetric:     lazyMetric{},
+		lazyMetric:     lazyMetric{stabilityLevel: opts.StabilityLevel},
 	}
 	cv.lazyInit(cv, fqName)
 	return cv
@@ -149,13 +173,16 @@ func (v *CounterVec) initializeDeprecatedMetric() {
 	v.initializeMetric()
 }
 
-// Default Prometheus behavior actually results in the creation of a new metric
-// if a metric with the unique label values is not found in the underlying stored metricMap.
+// Default Prometheus Vec behavior is that member extraction results in creation of a new element
+// if one with the unique label values is not found in the underlying stored metricMap.
 // This means  that if this function is called but the underlying metric is not registered
 // (which means it will never be exposed externally nor consumed), the metric will exist in memory
 // for perpetuity (i.e. throughout application lifecycle).
 //
 // For reference: https://github.com/prometheus/client_golang/blob/v0.9.2/prometheus/counter.go#L179-L197
+//
+// In contrast, the Vec behavior in this package is that member extraction before registration
+// returns a permanent noop object.
 
 // WithLabelValues returns the Counter for the given slice of label
 // values (same order as the VariableLabels in Desc). If that combination of
@@ -212,13 +239,13 @@ func (v *CounterVec) Reset() {
 func (v *CounterVec) WithContext(ctx context.Context) *CounterVecWithContext {
 	return &CounterVecWithContext{
 		ctx:        ctx,
-		CounterVec: *v,
+		CounterVec: v,
 	}
 }
 
 // CounterVecWithContext is the wrapper of CounterVec with context.
 type CounterVecWithContext struct {
-	CounterVec
+	*CounterVec
 	ctx context.Context
 }
 

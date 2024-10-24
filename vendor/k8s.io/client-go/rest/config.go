@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -114,6 +113,9 @@ type Config struct {
 
 	// QPS indicates the maximum QPS to the master from this client.
 	// If it's zero, the created RESTClient will use DefaultQPS: 5
+	//
+	// Setting this to a negative value will disable client-side ratelimiting
+	// unless `Ratelimiter` is also set.
 	QPS float32
 
 	// Maximum burst for throttle.
@@ -317,7 +319,7 @@ func RESTClientFor(config *Config) (*RESTClient, error) {
 
 	// Validate config.Host before constructing the transport/client so we can fail fast.
 	// ServerURL will be obtained later in RESTClientForConfigAndClient()
-	_, _, err := defaultServerUrlFor(config)
+	_, _, err := DefaultServerUrlFor(config)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +346,7 @@ func RESTClientForConfigAndClient(config *Config, httpClient *http.Client) (*RES
 		return nil, fmt.Errorf("NegotiatedSerializer is required when initializing a RESTClient")
 	}
 
-	baseURL, versionedAPIPath, err := defaultServerUrlFor(config)
+	baseURL, versionedAPIPath, err := DefaultServerUrlFor(config)
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +393,7 @@ func UnversionedRESTClientFor(config *Config) (*RESTClient, error) {
 
 	// Validate config.Host before constructing the transport/client so we can fail fast.
 	// ServerURL will be obtained later in UnversionedRESTClientForConfigAndClient()
-	_, _, err := defaultServerUrlFor(config)
+	_, _, err := DefaultServerUrlFor(config)
 	if err != nil {
 		return nil, err
 	}
@@ -411,7 +413,7 @@ func UnversionedRESTClientForConfigAndClient(config *Config, httpClient *http.Cl
 		return nil, fmt.Errorf("NegotiatedSerializer is required when initializing a RESTClient")
 	}
 
-	baseURL, versionedAPIPath, err := defaultServerUrlFor(config)
+	baseURL, versionedAPIPath, err := DefaultServerUrlFor(config)
 	if err != nil {
 		return nil, err
 	}
@@ -519,7 +521,7 @@ func InClusterConfig() (*Config, error) {
 		return nil, ErrNotInCluster
 	}
 
-	token, err := ioutil.ReadFile(tokenFile)
+	token, err := os.ReadFile(tokenFile)
 	if err != nil {
 		return nil, err
 	}
@@ -549,7 +551,7 @@ func InClusterConfig() (*Config, error) {
 // Note: the Insecure flag is ignored when testing for this value, so MITM attacks are
 // still possible.
 func IsConfigTransportTLS(config Config) bool {
-	baseURL, _, err := defaultServerUrlFor(&config)
+	baseURL, _, err := DefaultServerUrlFor(&config)
 	if err != nil {
 		return false
 	}
@@ -572,10 +574,7 @@ func LoadTLSFiles(c *Config) error {
 	}
 
 	c.KeyData, err = dataFromSliceOrFile(c.KeyData, c.KeyFile)
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // dataFromSliceOrFile returns data from the slice (if non-empty), or from the file,
@@ -585,7 +584,7 @@ func dataFromSliceOrFile(data []byte, file string) ([]byte, error) {
 		return data, nil
 	}
 	if len(file) > 0 {
-		fileData, err := ioutil.ReadFile(file)
+		fileData, err := os.ReadFile(file)
 		if err != nil {
 			return []byte{}, err
 		}
